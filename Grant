@@ -1,0 +1,142 @@
+package EnderGrant;
+
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.entity.Player;
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class Grant {
+    private final EnderGrant plugin;
+    private final Map<String, Integer> grantPriority;
+
+    public Grant(EnderGrant plugin) {
+        this.plugin = plugin;
+        this.grantPriority = new HashMap<>();
+        loadGrantPriorities();
+    }
+
+    private void loadGrantPriorities() {
+        FileConfiguration config = plugin.getConfig();
+        for (String grantPriorityEntry : config.getStringList("grant_priorities")) {
+            String[] parts = grantPriorityEntry.split(";");
+            String grant = parts[0].toLowerCase();
+            int priority = Integer.parseInt(parts[1]);
+            grantPriority.put(grant, priority);
+        }
+    }
+
+    public void giveGrant(CommandSender giver, String targetName, String grantType) {
+        FileConfiguration messages = plugin.getMessages();
+        Player target = Bukkit.getPlayer(targetName);
+        if (target == null) {
+            giver.sendMessage(ChatColor.translateAlternateColorCodes('&', messages.getString("player-not-found")));
+            return;
+        }
+
+        if (giver.getName().equalsIgnoreCase(targetName)) {
+            giver.sendMessage(ChatColor.translateAlternateColorCodes('&', messages.getString("cannot-grant-self")));
+            return;
+        }
+
+        if (grantType.equalsIgnoreCase("ender")) {
+            giver.sendMessage(ChatColor.translateAlternateColorCodes('&', messages.getString("cannot-grant-ender")));
+            return;
+        }
+
+        if (giver instanceof Player && !giver.hasPermission("endergrant.use")) {
+            giver.sendMessage(ChatColor.translateAlternateColorCodes('&', messages.getString("no-permission")));
+            return;
+        }
+
+        FileConfiguration config = plugin.getConfig();
+        if (!config.getConfigurationSection("grants").contains(grantType)) {
+            giver.sendMessage(ChatColor.translateAlternateColorCodes('&', messages.getString("invalid-grant-type")));
+            return;
+        }
+
+        if (!isGrantInLimits(giver, grantType)) {
+            giver.sendMessage(ChatColor.translateAlternateColorCodes('&', messages.getString("group-not-in-list")));
+            return;
+        }
+
+        Priority priorityChecker = new Priority(plugin, target, grantType);
+        if (!priorityChecker.handleDonationDrop()) {
+            giver.sendMessage(ChatColor.translateAlternateColorCodes('&', messages.getString("cannot-grant-lower")));
+            return;
+        }
+
+        int limit = getLimit(giver.getName(), grantType);
+        if (limit <= 0) {
+            giver.sendMessage(ChatColor.translateAlternateColorCodes('&', messages.getString("grant-limit-reached")));
+            return;
+        }
+
+        String command = messages.getString("luckperms-command").replace("{player}", targetName).replace("{group}", grantType);
+        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
+
+        target.sendMessage(ChatColor.translateAlternateColorCodes('&', messages.getString("grant-received").replace("{grant}", grantType).replace("{giver}", giver.getName())));
+        giver.sendMessage(ChatColor.translateAlternateColorCodes('&', messages.getString("grant-given").replace("{grant}", grantType).replace("{target}", targetName)));
+        updateLimit(giver.getName(), grantType, limit - 1);
+    }
+
+    private boolean isGrantInLimits(CommandSender giver, String grantType) {
+        FileConfiguration config = plugin.getConfig();
+        if (giver instanceof Player && giver.hasPermission("endergrant.use")) {
+            return config.getConfigurationSection("limits.ender").contains(grantType);
+        }
+        return false;
+    }
+
+    private String getCurrentGrant(Player target) {
+        for (String grant : grantPriority.keySet()) {
+            if (target.hasPermission("endergrant.current." + grant)) {
+                return grant;
+            }
+        }
+        return "default";
+    }
+
+    private int getLimit(String playerName, String grantType) {
+        FileConfiguration playersConfig = plugin.getPlayersConfig();
+        String path = "limits." + playerName + "." + grantType;
+        if (!playersConfig.contains(path)) {
+            FileConfiguration config = plugin.getConfig();
+            if (config.contains("limits.ender." + grantType)) {
+                int limit = config.getInt("limits.ender." + grantType);
+                playersConfig.set(path, limit);
+                plugin.savePlayersConfig();
+                return limit;
+            }
+            return -1;
+        }
+        return playersConfig.getInt(path);
+    }
+
+    private void updateLimit(String playerName, String grantType, int newLimit) {
+        FileConfiguration playersConfig = plugin.getPlayersConfig();
+        if (newLimit < 0) {
+            newLimit = 0;
+        }
+        playersConfig.set("limits." + playerName + "." + grantType, newLimit);
+        plugin.savePlayersConfig();
+    }
+
+    public String getLimits(Player player) {
+        StringBuilder limitsMessage = new StringBuilder(ChatColor.AQUA + "Ваши лимиты на донаты:\n");
+        FileConfiguration playersConfig = plugin.getPlayersConfig();
+        String playerName = player.getName();
+        if (playersConfig.getConfigurationSection("limits." + playerName) != null) {
+            for (String grant : playersConfig.getConfigurationSection("limits." + playerName).getKeys(false)) {
+                int limit = playersConfig.getInt("limits." + playerName + "." + grant);
+                if (limit > 0) {
+                    limitsMessage.append(ChatColor.AQUA).append("  ").append(grant).append(": ").append(limit).append("\n");
+                }
+            }
+        }
+        return limitsMessage.toString();
+    }
+}
